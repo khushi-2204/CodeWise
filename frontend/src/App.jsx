@@ -1,6 +1,99 @@
 
 import { useState } from "react";
 
+function renderInline(text, keyPrefix) {
+  const pieces = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g);
+
+  return pieces.map((piece, index) => {
+    const key = `${keyPrefix}-${index}`;
+    if (piece.startsWith("**") && piece.endsWith("**")) {
+      return <strong key={key}>{piece.slice(2, -2)}</strong>;
+    }
+    if (piece.startsWith("`") && piece.endsWith("`")) {
+      return <code key={key} className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-cyan-200">{piece.slice(1, -1)}</code>;
+    }
+    if (piece.startsWith("*") && piece.endsWith("*")) {
+      return <em key={key}>{piece.slice(1, -1)}</em>;
+    }
+    return piece;
+  });
+}
+
+function renderMarkdown(markdown) {
+  const lines = markdown.split("\n");
+  const blocks = [];
+  let paragraph = [];
+  let list = [];
+  let codeLines = null;
+  let codeLanguage = "";
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    blocks.push(<p key={`p-${blocks.length}`}>{renderInline(paragraph.join(" "), `p-${blocks.length}`)}</p>);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list.length) return;
+    blocks.push(
+      <ul key={`ul-${blocks.length}`} className="list-disc space-y-1 pl-5">
+        {list.map((item, index) => <li key={`li-${index}`}>{renderInline(item, `li-${blocks.length}-${index}`)}</li>)}
+      </ul>,
+    );
+    list = [];
+  };
+
+  lines.forEach((line) => {
+    if (codeLines) {
+      if (line.startsWith("```")) {
+        flushParagraph();
+        flushList();
+        blocks.push(
+          <pre key={`code-${blocks.length}`} className="overflow-x-auto rounded-lg border border-zinc-700 bg-zinc-950 p-4 text-xs leading-6">
+            {codeLanguage && <span className="mb-2 block font-sans text-[10px] uppercase tracking-wider text-zinc-500">{codeLanguage}</span>}
+            <code>{codeLines.join("\n")}</code>
+          </pre>,
+        );
+        codeLines = null;
+        codeLanguage = "";
+      } else {
+        codeLines.push(line);
+      }
+      return;
+    }
+
+    if (line.startsWith("```")) {
+      flushParagraph();
+      flushList();
+      codeLines = [];
+      codeLanguage = line.slice(3).trim();
+    } else if (!line.trim()) {
+      flushParagraph();
+      flushList();
+    } else if (/^\s*[-*+]\s+/.test(line)) {
+      flushParagraph();
+      list.push(line.replace(/^\s*[-*+]\s+/, ""));
+    } else {
+      flushList();
+      const heading = line.match(/^(#{1,3})\s+(.+)$/);
+      if (heading) {
+        flushParagraph();
+        const Heading = `h${heading[1].length}`;
+        blocks.push(<Heading key={`h-${blocks.length}`} className="font-semibold text-zinc-100">{renderInline(heading[2], `h-${blocks.length}`)}</Heading>);
+      } else {
+        paragraph.push(line);
+      }
+    }
+  });
+
+  flushParagraph();
+  flushList();
+  if (codeLines) {
+    blocks.push(<pre key={`code-${blocks.length}`} className="overflow-x-auto rounded-lg border border-zinc-700 bg-zinc-950 p-4 text-xs leading-6"><code>{codeLines.join("\n")}</code></pre>);
+  }
+
+  return blocks;
+}
+
 const actions = [
   { id: "explain", label: "Explain code", icon: "📖" },
   { id: "debug", label: "Find bugs", icon: "🐛" },
@@ -15,6 +108,17 @@ export default function App() {
   const [result, setResult] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [copyMessage, setCopyMessage] = useState("");
+
+  async function copyResult() {
+    try {
+      await navigator.clipboard.writeText(result);
+      setCopyMessage("Copied");
+    } catch {
+      setCopyMessage("Could not copy. Check clipboard permissions.");
+    }
+    window.setTimeout(() => setCopyMessage(""), 2000);
+  }
 
   async function analyzeCode() {
     if (!code.trim()) {
@@ -27,6 +131,9 @@ export default function App() {
     setError("");
     setResult("");
 
+    const requestController = new AbortController();
+    const requestTimeout = window.setTimeout(() => requestController.abort(), 50_000);
+
     try {
       const response = await fetch("/api/analyze", {
         method: "POST",
@@ -38,6 +145,7 @@ export default function App() {
           language,
           action,
         }),
+        signal: requestController.signal,
       });
 
       const data = await response.json().catch(() => ({}));
@@ -51,10 +159,15 @@ export default function App() {
       }
       setResult(data.result);
     } catch (error) {
-      setError(error instanceof TypeError
-        ? "Could not reach CodeWise. Check that the backend is running, then try again."
-        : error.message || "Analysis failed. Please try again.");
+      if (error.name === "TimeoutError" || error.name === "AbortError") {
+        setError("This request took too long. Please try again.");
+      } else {
+        setError(error instanceof TypeError
+          ? "Could not reach CodeWise. Check that the backend is running, then try again."
+          : error.message || "Analysis failed. Please try again.");
+      }
     } finally {
+      window.clearTimeout(requestTimeout);
       setIsLoading(false);
     }
   }
@@ -153,7 +266,16 @@ export default function App() {
 
           <section className="min-h-80 rounded-xl border border-zinc-800 bg-zinc-900 p-5">
             <div className="border-b border-zinc-800 pb-4">
-              <h3 className="font-medium">CodeWise response</h3>
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="font-medium">CodeWise response</h3>
+                <div className="flex items-center gap-2">
+                  {copyMessage && <span role="status" className="text-xs text-zinc-400">{copyMessage}</span>}
+                  <button type="button" onClick={copyResult} disabled={!result || isLoading}
+                    className="rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300 transition hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-40">
+                    Copy result
+                  </button>
+                </div>
+              </div>
               <p className="mt-1 text-xs text-zinc-500" aria-live="polite">
                 {isLoading ? "Working on your request…" : "Your results will appear here."}
               </p>
@@ -165,9 +287,9 @@ export default function App() {
                   {error}
                 </p>
               ) : result ? (
-                <p className="whitespace-pre-wrap text-sm leading-7 text-zinc-300">
-                  {result}
-                </p>
+                <div className="space-y-4 text-sm leading-7 text-zinc-300 [&_h1]:text-lg [&_h2]:text-base [&_p]:whitespace-pre-wrap">
+                  {renderMarkdown(result)}
+                </div>
               ) : (
                 <div className="flex min-h-48 flex-col items-center justify-center text-center">
                   <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl border border-zinc-700 bg-zinc-800 text-xl">
