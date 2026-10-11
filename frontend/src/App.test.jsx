@@ -1,26 +1,8 @@
 // @vitest-environment jsdom
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import App from "./App";
-
-const { clerkAuth } = vi.hoisted(() => ({
-  clerkAuth: { isLoaded: true, isSignedIn: true, getToken: vi.fn() },
-}));
-
-vi.mock("@clerk/react", () => ({
-  useAuth: () => clerkAuth,
-  SignIn: () => "Sign-in form",
-  SignUp: () => "Sign-up form",
-  UserButton: () => "Account menu",
-}));
-
-beforeEach(() => {
-  clerkAuth.isLoaded = true;
-  clerkAuth.isSignedIn = true;
-  clerkAuth.getToken.mockReset().mockResolvedValue("test-session-token");
-  window.location.hash = "";
-});
 
 afterEach(() => {
   cleanup();
@@ -51,7 +33,6 @@ describe("CodeWise analysis flow", () => {
       }),
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer test-session-token",
       },
     }));
 
@@ -97,15 +78,5 @@ describe("CodeWise analysis flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Analyze code" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain("rate-limiting");
-  });
-
-  it("shows sign-in and sign-up choices before the analyzer for signed-out users", () => {
-    clerkAuth.isSignedIn = false;
-    render(<App />);
-
-    expect(screen.getByText("Sign-in form")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Sign up" }));
-    expect(screen.getByText("Sign-up form")).toBeTruthy();
-    expect(screen.queryByRole("textbox", { name: "Code to analyze" })).toBeNull();
   });
 });

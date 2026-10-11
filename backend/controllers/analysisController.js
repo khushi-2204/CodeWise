@@ -1,4 +1,5 @@
 const { getOpenRouterClient } = require("../config/openrouter");
+const pool = require("../config/db");
 
 const allowedActions = {
   explain: "Explain the code in plain language. Describe its purpose, walk through the important steps, and clarify non-obvious values or control flow. Define technical terms briefly.",
@@ -110,7 +111,11 @@ module.exports = {
         });
     }
     },
-    checkHealth : (req, res) => {
+    checkHealth : async (req, res) => {
+        const out = await pool.query(
+            "SELECT NOW() AS database_time, current_database() AS database_name"
+        );
+        console.log("database output",out.rows[0].database_name);
         res.status(200).json({
             success: true,
             message: "CodeWise backend is running!",

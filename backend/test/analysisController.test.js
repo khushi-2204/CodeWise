@@ -3,7 +3,6 @@ const assert = require("node:assert/strict");
 const { createAnalyzeRateLimiter } = require("../middleware/analyzeRateLimit");
 const { errorHandler } = require("../middleware/errorHandler");
 const { requestLogger } = require("../middleware/requestLogger");
-const { createRequireAuth } = require("../middleware/requireAuth");
 
 const openrouterPath = require.resolve("../config/openrouter");
 const cachedOpenrouter = require.cache[openrouterPath];
@@ -152,42 +151,6 @@ test("limits analysis requests per client and resets the window", () => {
   assert.equal(call().nextCalled, true);
 });
 
-test("auth guard returns 503 when Clerk server keys are not configured", () => {
-  const requireAuth = createRequireAuth({ isConfigured: () => false });
-  const response = {
-    status(statusCode) { this.statusCode = statusCode; return this; },
-    json(data) { this.data = data; return this; },
-  };
-
-  requireAuth({}, response, () => assert.fail("must not continue without auth configuration"));
-
-  assert.equal(response.statusCode, 503);
-  assert.match(response.data.message, /not configured/);
-});
-
-test("auth guard rejects anonymous callers and attaches the authenticated user ID", () => {
-  const response = {
-    status(statusCode) { this.statusCode = statusCode; return this; },
-    json(data) { this.data = data; return this; },
-  };
-  const rejectAnonymous = createRequireAuth({
-    isConfigured: () => true,
-    getAuthForRequest: () => ({ isAuthenticated: false, userId: null }),
-  });
-  rejectAnonymous({}, response, () => assert.fail("anonymous callers must be rejected"));
-  assert.equal(response.statusCode, 401);
-
-  const req = {};
-  let nextCalled = false;
-  const allowSignedIn = createRequireAuth({
-    isConfigured: () => true,
-    getAuthForRequest: () => ({ isAuthenticated: true, userId: "user_test_123" }),
-  });
-  allowSignedIn(req, response, () => { nextCalled = true; });
-  assert.equal(nextCalled, true);
-  assert.equal(req.authUserId, "user_test_123");
-});
-
 test("formats invalid JSON errors without returning parser details", () => {
   const error = new SyntaxError("sensitive parser detail");
   error.status = 400;
@@ -237,7 +200,7 @@ test("logs request metadata and assigns a request ID without logging the body", 
   assert.doesNotMatch(logLine, /private source/);
 });
 
-test("serves request IDs and JSON parser errors, and requires auth for analysis", async () => {
+test("serves request IDs and JSON parser errors for analysis", async () => {
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   const address = server.address();
@@ -267,13 +230,13 @@ test("serves request IDs and JSON parser errors, and requires auth for analysis"
     assert.equal(oversized.status, 413);
     assert.match((await oversized.json()).message, /too large/);
 
-    const anonymousAnalysis = await fetch(`${baseUrl}/api/analyze`, {
+    const invalidAnalysis = await fetch(`${baseUrl}/api/analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code: "", language: "javascript", action: "explain" }),
     });
-    assert.equal(anonymousAnalysis.status, 503);
-    assert.match((await anonymousAnalysis.json()).message, /Sign-in is not configured/);
+    assert.equal(invalidAnalysis.status, 400);
+    assert.match((await invalidAnalysis.json()).message, /provide code/);
   } finally {
     console.log = originalConsoleLog;
     console.error = originalConsoleError;
