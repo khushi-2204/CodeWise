@@ -1,5 +1,6 @@
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import AuthPage from "./AuthPage";
 
 function renderInline(text, keyPrefix) {
   const pieces = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g);
@@ -101,7 +102,7 @@ const actions = [
   { id: "tests", label: "Generate tests", icon: "🧪" },
 ];
 
-export default function App() {
+function AnalysisWorkspace({ user, onLogout, csrfToken, authError, authLoading }) {
   const [language, setLanguage] = useState("javascript");
   const [action, setAction] = useState("explain");
   const [code, setCode] = useState("");
@@ -137,8 +138,10 @@ export default function App() {
     try {
       const response = await fetch("/api/analyze", {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
+          "X-CSRF-Token": csrfToken,
         },
         body: JSON.stringify({
           code,
@@ -188,9 +191,17 @@ export default function App() {
         <span className="rounded-full border border-zinc-700 px-3 py-1 text-xs text-zinc-400">
           V1 · Code Assistant
         </span>
+        <div className="flex items-center gap-3">
+          <span className="hidden max-w-48 truncate text-xs text-zinc-500 sm:block">{user.name}</span>
+          <button type="button" onClick={onLogout} disabled={authLoading}
+            className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 transition hover:border-zinc-500 disabled:opacity-50">
+            {authLoading ? "Signing out…" : "Sign out"}
+          </button>
+        </div>
       </header>
 
       <main className="mx-auto max-w-6xl px-5 py-10">
+        {authError && <p role="alert" className="mb-5 rounded-lg border border-rose-900/70 bg-rose-950/30 p-4 text-sm text-rose-300">{authError}</p>}
         <div className="mb-8">
           <h2 className="text-3xl font-semibold tracking-tight">
             Understand your code.
@@ -314,4 +325,100 @@ export default function App() {
       </main>
     </div>
   );
+}
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [csrfToken, setCsrfToken] = useState("");
+  const [authReady, setAuthReady] = useState(false);
+  const [authMode, setAuthMode] = useState("login");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
+
+  const loadAuthState = useCallback(async () => {
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      const csrfResponse = await fetch("/api/auth/csrf", { credentials: "include" });
+      const csrfData = await csrfResponse.json().catch(() => ({}));
+      if (!csrfResponse.ok || !csrfData.csrfToken) throw new Error(csrfData.message || "Could not start a secure session.");
+      setCsrfToken(csrfData.csrfToken);
+
+      const response = await fetch("/api/auth/me", { credentials: "include" });
+      const data = await response.json().catch(() => ({}));
+      if (response.status === 401) setUser(null);
+      else if (!response.ok) throw new Error(data.message || "Could not restore your sign-in session.");
+      else setUser(data.user);
+    } catch (error) {
+      setAuthError(error instanceof TypeError
+        ? "Could not reach CodeWise. Check that the backend is running, then retry."
+        : error.message || "Could not restore your sign-in session.");
+    } finally {
+      setAuthReady(true);
+      setAuthLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    Promise.resolve().then(() => { if (active) loadAuthState(); });
+    return () => { active = false; };
+  }, [loadAuthState]);
+
+  async function submitAuth({ name, email, password }) {
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      const endpoint = authMode === "signup" ? "signup" : "login";
+      const response = await fetch(`/api/auth/${endpoint}`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+        body: JSON.stringify({ name, email, password }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || "Could not sign in. Please try again.");
+      setUser(data.user);
+      setCsrfToken(data.csrfToken);
+    } catch (error) {
+      setAuthError(error instanceof TypeError
+        ? "Could not reach CodeWise. Check that the backend is running, then try again."
+        : error.message || "Could not sign in. Please try again.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function logout() {
+    setAuthLoading(true);
+    try {
+      const response = await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+        headers: { "X-CSRF-Token": csrfToken },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || "Could not sign out. Please try again.");
+      setUser(null);
+      setAuthMode("login");
+      const csrfResponse = await fetch("/api/auth/csrf", { credentials: "include" });
+      const csrfData = await csrfResponse.json().catch(() => ({}));
+      if (csrfResponse.ok) setCsrfToken(csrfData.csrfToken || "");
+    } catch (error) {
+      setAuthError(error.message || "Could not sign out. Please try again.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  if (!authReady) {
+    return <div className="flex min-h-screen items-center justify-center bg-zinc-950 text-sm text-zinc-400">Loading CodeWise…</div>;
+  }
+
+  if (!user) {
+    return <AuthPage mode={authMode} onModeChange={(mode) => { setAuthMode(mode); setAuthError(""); }}
+      onSubmit={submitAuth} onRetry={loadAuthState} error={authError} isLoading={authLoading} />;
+  }
+
+  return <AnalysisWorkspace user={user} onLogout={logout} csrfToken={csrfToken} authError={authError} authLoading={authLoading} />;
 }

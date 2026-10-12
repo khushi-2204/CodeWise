@@ -3,6 +3,11 @@ const assert = require("node:assert/strict");
 const { createAnalyzeRateLimiter } = require("../middleware/analyzeRateLimit");
 const { errorHandler } = require("../middleware/errorHandler");
 const { requestLogger } = require("../middleware/requestLogger");
+const { validateCredentials } = require("../controllers/authController");
+const { csrfProtection } = require("../middleware/csrfProtection");
+const { requireAuth } = require("../middleware/requireAuth");
+
+process.env.SESSION_SECRET ||= "test-only-session-secret-value-32-chars";
 
 const openrouterPath = require.resolve("../config/openrouter");
 const cachedOpenrouter = require.cache[openrouterPath];
@@ -151,6 +156,32 @@ test("limits analysis requests per client and resets the window", () => {
   assert.equal(call().nextCalled, true);
 });
 
+test("validates normalized account inputs and bcrypt password byte limits", () => {
+  assert.equal(validateCredentials({ name: "Ada", email: "ada@example.com", password: "a-secure-password" }, true), null);
+  assert.match(validateCredentials({ name: " ", email: "ada@example.com", password: "a-secure-password" }, true), /Name/);
+  assert.match(validateCredentials({ name: "Ada", email: "not-an-email", password: "a-secure-password" }, true), /email/);
+  assert.match(validateCredentials({ email: "ada@example.com", password: "short" }, false), /12 and 72 bytes/);
+  assert.match(validateCredentials({ email: "ada@example.com", password: "é".repeat(37) }, false), /12 and 72 bytes/);
+});
+
+test("requires an authenticated session and validates request origin and CSRF token", () => {
+  const response = {
+    status(statusCode) { this.statusCode = statusCode; return this; },
+    json(data) { this.data = data; return this; },
+  };
+  let nextCalled = false;
+  requireAuth({ session: {} }, response, () => { nextCalled = true; });
+  assert.equal(response.statusCode, 401);
+  assert.equal(nextCalled, false);
+
+  const csrfRequest = {
+    session: { csrfToken: "expected-token" },
+    get(name) { return name === "origin" ? "http://localhost:5173" : "expected-token"; },
+  };
+  csrfProtection(csrfRequest, response, () => { nextCalled = true; });
+  assert.equal(nextCalled, true);
+});
+
 test("formats invalid JSON errors without returning parser details", () => {
   const error = new SyntaxError("sensitive parser detail");
   error.status = 400;
@@ -214,6 +245,16 @@ test("serves request IDs and JSON parser errors for analysis", async () => {
     const health = await fetch(`${baseUrl}/api/health`);
     assert.match(health.headers.get("x-request-id"), /^[0-9a-f-]{36}$/i);
 
+    let providerCalled = false;
+    mockedClient.chat.completions.create = async () => { providerCalled = true; };
+    const unauthenticatedAnalysis = await fetch(`${baseUrl}/api/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: "const value = 42;", language: "javascript", action: "explain" }),
+    });
+    assert.equal(unauthenticatedAnalysis.status, 401);
+    assert.equal(providerCalled, false);
+
     const malformed = await fetch(`${baseUrl}/api/analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -235,8 +276,8 @@ test("serves request IDs and JSON parser errors for analysis", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code: "", language: "javascript", action: "explain" }),
     });
-    assert.equal(invalidAnalysis.status, 400);
-    assert.match((await invalidAnalysis.json()).message, /provide code/);
+    assert.equal(invalidAnalysis.status, 401);
+    assert.match((await invalidAnalysis.json()).message, /sign in/);
   } finally {
     console.log = originalConsoleLog;
     console.error = originalConsoleError;
