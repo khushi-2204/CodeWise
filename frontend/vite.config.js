@@ -9,7 +9,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), tailwindcss()],
     server: {
       proxy: {
-        '/api': env.VITE_BACKEND_URL || 'http://localhost:5000',
+        '/api': env.BACKEND_URL || 'http://localhost:5000',
       },
     },
   }
